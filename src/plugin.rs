@@ -1,7 +1,7 @@
 use crate::qrcode::QrCodeScanner;
 use flutter_plugins::prelude::*;
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::{Arc, Barrier};
+use std::sync::Arc;
 
 const PLUGIN_NAME: &str = module_path!();
 const CHANNEL_NAME: &str = "rust/qrcode";
@@ -13,8 +13,8 @@ pub struct QrCodePlugin {
 
 #[derive(Default)]
 struct Handler {
+    handle: Option<Handle>,
     stop_trigger: Arc<AtomicBool>,
-    barrier: Option<Arc<Barrier>>,
 }
 
 impl Plugin for QrCodePlugin {
@@ -34,8 +34,9 @@ impl EventHandler for Handler {
         _value: Value,
         engine: FlutterEngine,
     ) -> Result<Value, MethodCallError> {
-        if let Some(barrier) = self.barrier.take() {
-            barrier.wait();
+        if let Some(handle) = &self.handle {
+            send_event(engine, Event::Initialized(handle.clone()))?;
+            return Ok(Value::Null);
         }
 
         // create texture
@@ -44,21 +45,18 @@ impl EventHandler for Handler {
 
         // create scanner
         let mut scanner = QrCodeScanner::new(texture)?;
-        send_event(engine.clone(), Event::Initialized {
+        let handle = Handle {
             texture_id,
             width: scanner.width() as _,
             height: scanner.height() as _,
-        })?;
+        };
+        self.handle = Some(handle.clone());
+        send_event(engine.clone(), Event::Initialized(handle))?;
 
         let stop_trigger = Arc::new(AtomicBool::new(false));
         self.stop_trigger = stop_trigger.clone();
-        let barrier = Arc::new(Barrier::new(2));
-        self.barrier = Some(barrier.clone());
         engine.clone().run_in_background(async move {
-            loop {
-                if stop_trigger.load(Ordering::Relaxed) {
-                    break;
-                }
+            while !stop_trigger.load(Ordering::Relaxed) {
                 match scanner.frame() {
                     Ok(Some(code)) => send_event(engine.clone(), Event::QrCode(code)).unwrap(),
                     Err(err) => send_error(engine.clone(), &err),
@@ -67,18 +65,19 @@ impl EventHandler for Handler {
             }
             drop(scanner);
             send_event(engine, Event::Disposed).unwrap();
-            barrier.wait();
         });
         Ok(Value::Null)
     }
 
     fn on_cancel(&mut self, _engine: FlutterEngine) -> Result<Value, MethodCallError> {
         self.stop_trigger.store(true, Ordering::Relaxed);
+        self.handle = None;
         Ok(Value::Null)
     }
 }
 
 fn send_event(engine: FlutterEngine, event: Event) -> Result<(), MethodCallError> {
+    log::debug!("event: {:?}", event);
     let value = to_value(event)?;
     engine.run_on_platform_thread(move |engine| {
         engine.with_channel(CHANNEL_NAME, |channel| {
@@ -92,6 +91,7 @@ fn send_event(engine: FlutterEngine, event: Event) -> Result<(), MethodCallError
 
 fn send_error(engine: FlutterEngine, error: &dyn std::error::Error) {
     let message = format!("{}", error);
+    log::error!("{}", &message);
     engine.run_on_platform_thread(move |engine| {
         engine.with_channel(CHANNEL_NAME, move |channel| {
             if let Some(channel) = channel.try_as_method_channel() {
@@ -101,14 +101,18 @@ fn send_error(engine: FlutterEngine, error: &dyn std::error::Error) {
     });
 }
 
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct Handle {
+    texture_id: i64,
+    width: i64,
+    height: i64,
+}
+
 #[derive(Debug, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
 enum Event {
-    Initialized {
-        texture_id: i64,
-        width: i64,
-        height: i64,
-    },
+    Initialized(Handle),
     QrCode(String),
     Disposed,
 }

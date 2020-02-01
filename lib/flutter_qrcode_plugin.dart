@@ -30,7 +30,7 @@ class QrCodeController {
   onData(dynamic data) {
     final initialized = data['initialized'];
     if (initialized != null) {
-      textureId = initialized['texture_id'];
+      textureId = initialized['textureId'];
       width = initialized['width'];
       height = initialized['height'];
       aspectRatio = width.toDouble() / height.toDouble();

@@ -37,7 +37,7 @@ class _QrCodeAppState extends State<QrCodeApp> {
         body: Center(
           child: Column(
             children: [
-              _controller.isInitialized
+              _controller?.isInitialized ?? false
                 ? AspectRatio(
                     aspectRatio: _controller.aspectRatio,
                     child: Texture(textureId: _controller.textureId),
